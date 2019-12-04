@@ -1,8 +1,10 @@
 build/
 CMakeFiles/
+lib/
 
 CMakeCache.txt
 Makefile
 cmake_install.cmake
+libfab-test*
 
 .*.sw*
