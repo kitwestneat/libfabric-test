@@ -6,6 +6,7 @@
 struct net_info {
     struct fi_info *fi;
     struct fid_fabric *fabric;
+    struct fid_wait *wait_set;
     struct fid_eq *eq;
 
     struct server_info *server;
@@ -18,14 +19,17 @@ struct server_info {
 };
 
 struct server_connection {
+    struct server_connection *next;
     struct fid_domain *domain;
     struct fid_ep *ep;
     struct fid_cq *cq;
+    void *read_buf;
 };
 
 struct client_info {
     struct fid_domain *domain;
     struct fid_ep *ep;
+    struct fid_cq *cq;
 };
 
 int init_network(struct net_info *ni, bool is_server);

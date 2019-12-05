@@ -17,6 +17,10 @@
 #include "network.h"
 
 int init_client(struct net_info *ni) {
+    struct fi_cq_attr cq_attr = {
+        .format = FI_CQ_FORMAT_DATA,
+        .wait_obj = FI_WAIT_UNSPEC,
+    };
     int rc;
 
     ni->client = calloc(1, sizeof(*ni->client));
@@ -40,6 +44,9 @@ int init_client(struct net_info *ni) {
         FI_GOTO(err3, "fi_ep_bind");
     }
 
+    fi_cq_open(ni->client->domain, &cq_attr, &ni->client->cq, NULL);
+    fi_ep_bind(ni->client->ep, &ni->client->cq->fid, FI_RECV | FI_SEND);
+
     rc = fi_enable(ni->client->ep);
 
     return 0;
@@ -55,10 +62,12 @@ err:
 }
 
 int run_client(struct net_info *ni, const char *addr, unsigned short port) {
-    uint32_t event;
+    uint32_t event= 0;
     struct fi_eq_cm_entry cm_entry;
     struct sockaddr_in sin;
     int rc;
+    char buf[] = "Hello World!";
+    struct fi_cq_data_entry buf2;
 
     sin.sin_family = AF_INET;
     sin.sin_port = htons(port);
@@ -68,8 +77,13 @@ int run_client(struct net_info *ni, const char *addr, unsigned short port) {
     printf("fi_connect(%s:%d) = %d\n", addr, port, rc);
 
     fi_eq_sread(ni->eq, &event, &cm_entry, sizeof(cm_entry), -1, 0);
+    fi_send(ni->client->ep, &buf, sizeof(buf), NULL, (fi_addr_t)NULL, NULL);
 
-    printf("got event!");
+    fi_cq_sread(ni->client->cq, &buf2, sizeof(buf2), 0, -1);
+    printf("got a cq? %s %.12s\n", fi_tostr(&buf2.flags, FI_TYPE_CQ_EVENT_FLAGS), buf2.buf);
+    fi_cq_sread(ni->client->cq, &buf2, sizeof(buf2), 0, -1);
+    printf("got a cq? %s %.12s\n", fi_tostr(&buf2.flags, FI_TYPE_CQ_EVENT_FLAGS), buf2.buf);
+
 }
 
 void close_client(struct net_info *ni) {

@@ -46,7 +46,8 @@ struct fi_info* get_fi(bool is_source) {
     hints->caps = FI_RMA;
     //hints->ep_attr->type = FI_EP_RDM;
     hints->ep_attr->type = FI_EP_MSG;
-    hints->fabric_attr->prov_name = strdup("tcp");
+    //hints->fabric_attr->prov_name = strdup("tcp");
+    hints->fabric_attr->prov_name = strdup("sockets");
 
     rc = fi_getinfo(FI_VERSION(1, 4), "127.0.0.1", "1701", is_source ? FI_SOURCE : 0, hints, &fi);
 
@@ -67,8 +68,11 @@ void free_fi(struct fi_info *info) {
 }
 
 int init_network(struct net_info *ni, bool is_server) {
-    struct fi_eq_attr eq_attr = {
+    struct fi_wait_attr wait_attr = {
         .wait_obj = FI_WAIT_UNSPEC
+    };
+    struct fi_eq_attr eq_attr = {
+        .wait_obj = FI_WAIT_SET,
     };
     int rc = 0;
 
@@ -84,6 +88,13 @@ int init_network(struct net_info *ni, bool is_server) {
     if (rc < 0) {
         FI_GOTO(err1, "fi_fabric");
     }
+
+    rc = fi_wait_open(ni->fabric, &wait_attr, &ni->wait_set);
+    if (rc < 0) {
+        FI_GOTO(err2, "fi_wait_open");
+    }
+
+    eq_attr.wait_set = ni->wait_set;
 
     rc = fi_eq_open(ni->fabric, &eq_attr, &ni->eq, NULL);
     if (rc < 0) {
@@ -102,6 +113,7 @@ err:
 
 void close_network(struct net_info *ni) {
     fi_close((fid_t)ni->eq);
+    fi_close((fid_t)ni->wait_set);
     fi_close((fid_t)ni->fabric);
     free_fi(ni->fi);
 }

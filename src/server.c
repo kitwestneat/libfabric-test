@@ -70,43 +70,99 @@ err:
 }
 
 void close_server(struct net_info *ni) {
+    while (ni->server->connection_list) {
+        struct server_connection *cxn = ni->server->connection_list;
+        ni->server->connection_list = cxn->next;
+
+        fi_close((fid_t)cxn->cq);
+        fi_close((fid_t)cxn->ep);
+        fi_close((fid_t)cxn->domain);
+
+        free(cxn->read_buf);
+        free(cxn);
+    }
+
     fi_close((fid_t)ni->server->pep);
     free(ni->server);
 }
 
-int run_server(struct net_info *ni) {
-    uint32_t event;
-    struct fi_eq_cm_entry cm_entry;
-    struct server_connection cxn;
-
+int add_connection(struct net_info *ni, struct fi_eq_cm_entry *cm_entry) {
     struct fi_cq_attr cq_attr = {
         .format = FI_CQ_FORMAT_DATA,
-        .wait_obj = FI_WAIT_NONE
+        .wait_obj = FI_WAIT_SET,
+        .wait_set = ni->wait_set
     };
-
     int len = 4096;
-    void *buf = malloc(4096);
+    struct server_connection *cxn = calloc(1, sizeof(struct server_connection));
 
-    fi_eq_sread(ni->eq, &event, &cm_entry, sizeof cm_entry, -1, 0);
-    assert(event == FI_CONNREQ);
-    printf("Got event!");
+    cxn->read_buf = malloc(4096);
 
-
-    if (!cm_entry.info->domain_attr->domain) {
-        fi_domain(ni->fabric, cm_entry.info, &cxn.domain, NULL);
+    if (!cm_entry->info->domain_attr->domain) {
+        fi_domain(ni->fabric, cm_entry->info, &cxn->domain, NULL);
     }
 
-    fi_endpoint(cxn.domain, cm_entry.info, &cxn.ep, NULL);
+    fi_endpoint(cxn->domain, cm_entry->info, &cxn->ep, NULL);
 
-    fi_ep_bind(cxn.ep, (fid_t)ni->eq, 0);
+    fi_ep_bind(cxn->ep, (fid_t)ni->eq, 0);
 
     // segfaults without cqs set up
-    fi_cq_open(cxn.domain, &cq_attr, &cxn.cq, NULL);
-    fi_ep_bind(cxn.ep, &cxn.cq->fid, FI_RECV);
+    fi_cq_open(cxn->domain, &cq_attr, &cxn->cq, NULL);
+    fi_ep_bind(cxn->ep, &cxn->cq->fid, FI_RECV);
 
-    fi_enable(cxn.ep);
-    fi_recv(cxn.ep, &buf, len, NULL, 0, NULL);
+    fi_enable(cxn->ep);
+    fi_recv(cxn->ep, &cxn->read_buf, len, NULL, 0, NULL);
 
-    fi_accept(cxn.ep, NULL, 0);
+    fi_accept(cxn->ep, NULL, 0);
+
+    // XXX lock?
+    cxn->next = ni->server->connection_list;
+    ni->server->connection_list = cxn;
+}
+
+void process_eq_events(struct net_info *ni) {
+    uint32_t event;
+    struct fi_eq_cm_entry cm_entry;
+    int rc;
+
+    do {
+        rc = fi_eq_read(ni->eq, &event, &cm_entry, sizeof cm_entry, 0);
+        if (rc == -EAGAIN) {
+            return;
+        } else if (rc < 0) {
+            fprintf(stderr, "got error trying to read eq event: %d\n", rc);
+            return;
+        }
+
+        switch(event) {
+            case FI_CONNREQ:
+                printf("Connecting...\n");
+                add_connection(ni, &cm_entry);
+                break;
+            case FI_CONNECTED:
+                printf("Connected\n");
+                break;
+            default:
+                fprintf(stderr, "unknown event: %d - %s\n", event, fi_tostr(&event, FI_TYPE_EQ_EVENT));
+                break;
+        }
+    } while (rc != 0);
+}
+
+int run_server(struct net_info *ni) {
+    for(;;) {
+        int rc;
+
+        rc = fi_wait(ni->wait_set, 1000);
+
+        if (rc == -FI_ETIMEDOUT) {
+            continue;
+        } else if (rc < 0) {
+            fprintf(stderr, "Error waiting: %d\n", rc);
+            continue;
+        }
+
+        printf("Got event\n");
+        process_eq_events(ni);
+    }
 }
 
