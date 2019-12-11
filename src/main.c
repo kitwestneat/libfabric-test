@@ -3,31 +3,39 @@
 
 #include "network.h"
 
-int main(int argc, const char **argv) {
+int main(int argc, const char **argv)
+{
     struct net_info net;
     bool is_server = argc > 1;
     int rc;
 
-    init_network(&net, is_server);
-    if (rc < 0) {
+    rc = init_network(&net, is_server);
+    if (rc < 0)
+    {
         fprintf(stderr, "Unable to initialize fabric");
 
         return rc;
     }
 
-    if (is_server) {
+    if (is_server)
+    {
         rc = init_server(&net);
-        if (rc < 0) {
+        if (rc < 0)
+        {
             fprintf(stderr, "Unable to initialize server");
 
             return rc;
         }
 
         run_server(&net);
+        fprintf(stderr, "Closing server...\n");
         close_server(&net);
-    } else {
+    }
+    else
+    {
         init_client(&net);
-        if (rc < 0) {
+        if (rc < 0)
+        {
             fprintf(stderr, "Unable to initialize client");
 
             return rc;

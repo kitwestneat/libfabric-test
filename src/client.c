@@ -16,7 +16,8 @@
 #include "log.h"
 #include "network.h"
 
-int init_client(struct net_info *ni) {
+int init_client(struct net_info *ni)
+{
     struct fi_cq_attr cq_attr = {
         .format = FI_CQ_FORMAT_DATA,
         .wait_obj = FI_WAIT_UNSPEC,
@@ -24,23 +25,27 @@ int init_client(struct net_info *ni) {
     int rc;
 
     ni->client = calloc(1, sizeof(*ni->client));
-    if (!ni->client) {
+    if (!ni->client)
+    {
         rc = -1;
         GOTO(err, "cannot allocate server_info");
     }
 
     rc = fi_domain(ni->fabric, ni->fi, &ni->client->domain, NULL);
-    if (rc < 0) {
+    if (rc < 0)
+    {
         FI_GOTO(err1, "fi_domain");
     }
 
     rc = fi_endpoint(ni->client->domain, ni->fi, &ni->client->ep, NULL);
-    if (rc < 0) {
+    if (rc < 0)
+    {
         FI_GOTO(err2, "fi_endpoint");
     }
 
     rc = fi_ep_bind(ni->client->ep, (fid_t)ni->eq, 0);
-    if (rc < 0) {
+    if (rc < 0)
+    {
         FI_GOTO(err3, "fi_ep_bind");
     }
 
@@ -61,8 +66,9 @@ err:
     return rc;
 }
 
-int run_client(struct net_info *ni, const char *addr, unsigned short port) {
-    uint32_t event= 0;
+int run_client(struct net_info *ni, const char *addr, unsigned short port)
+{
+    uint32_t event = 0;
     struct fi_eq_cm_entry cm_entry;
     struct sockaddr_in sin;
     int rc;
@@ -81,13 +87,10 @@ int run_client(struct net_info *ni, const char *addr, unsigned short port) {
 
     fi_cq_sread(ni->client->cq, &buf2, sizeof(buf2), 0, -1);
     printf("got a cq? %s %.12s\n", fi_tostr(&buf2.flags, FI_TYPE_CQ_EVENT_FLAGS), buf2.buf);
-    fi_cq_sread(ni->client->cq, &buf2, sizeof(buf2), 0, -1);
-    printf("got a cq? %s %.12s\n", fi_tostr(&buf2.flags, FI_TYPE_CQ_EVENT_FLAGS), buf2.buf);
-
 }
 
-void close_client(struct net_info *ni) {
+void close_client(struct net_info *ni)
+{
     free((fid_t)ni->client->domain);
     free(ni->client);
 }
-
