@@ -85,6 +85,7 @@ err:
 
 void close_connection(struct server_connection *cxn)
 {
+    // tcp provider doesn't like having the cq closed before the ep
     fi_close((fid_t)cxn->ep);
     fi_close((fid_t)cxn->cq);
     fi_close((fid_t)cxn->domain);
@@ -260,11 +261,7 @@ void process_cq_events(struct net_info *ni)
 
     do
     {
-        struct fi_cq_err_entry err_entry;
-        rc = fi_cq_readerr(cxn->cq, &err_entry, 0);
-        printf("fi_cq_readerr rc=%d err_entry.err: %d\n", rc, err_entry.err);
         rc = fi_cq_read(cxn->cq, &cqde, 1);
-        printf("fi_cq_read=%d\n", rc);
         if (rc == -FI_EAGAIN)
         {
             return;
@@ -277,7 +274,7 @@ void process_cq_events(struct net_info *ni)
 
         if (cqde.flags & FI_RECV)
         {
-            printf("Got message! %*s\n", cqde.len, cqde.buf);
+            printf("Got message! len %d %.*s\n", cqde.len, cqde.len, cxn->read_buf);
             fi_recv(cxn->ep, cxn->read_buf, 4096, NULL, 0, NULL);
         }
         else
