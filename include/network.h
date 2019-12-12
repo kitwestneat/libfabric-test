@@ -3,7 +3,8 @@
 
 #include <stdbool.h>
 
-struct net_info {
+struct net_info
+{
     struct fi_info *fi;
     struct fid_fabric *fabric;
     struct fid_wait *wait_set;
@@ -13,12 +14,15 @@ struct net_info {
     struct client_info *client;
 };
 
-struct server_info {
+struct server_info
+{
     struct fid_pep *pep;
     struct server_connection *connection_list;
 };
 
-struct server_connection {
+struct server_connection
+{
+    int client_id;
     struct server_connection *next;
     struct fid_domain *domain;
     struct fid_ep *ep;
@@ -26,7 +30,8 @@ struct server_connection {
     void *read_buf;
 };
 
-struct client_info {
+struct client_info
+{
     struct fid_domain *domain;
     struct fid_ep *ep;
     struct fid_cq *cq;

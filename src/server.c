@@ -108,6 +108,12 @@ void close_server(struct net_info *ni)
     free(ni->server);
 }
 
+int next_client_id = 0;
+int get_client_id()
+{
+    return next_client_id++;
+}
+
 int add_connection(struct net_info *ni, struct fi_eq_cm_entry *cm_entry)
 {
     struct fi_cq_attr cq_attr = {
@@ -119,7 +125,9 @@ int add_connection(struct net_info *ni, struct fi_eq_cm_entry *cm_entry)
     int rc = 0;
     bool domain_init = 0;
 
-    printf("add_connection\n");
+    cxn->client_id = get_client_id();
+
+    printf("add_connection %d\n", cxn->client_id);
 
     cxn->read_buf = malloc(4096);
     if (!cxn->read_buf)
@@ -201,12 +209,26 @@ err:
 int del_connection(struct net_info *ni, struct fi_eq_cm_entry *cm_entry)
 {
     struct server_connection *cxn = ni->server->connection_list;
-    if ((fid_t)cxn->ep == cm_entry->fid)
+    struct server_connection **cxn_ptr = &ni->server->connection_list;
+    while (cxn)
     {
-        ni->server->connection_list = NULL;
-        close_connection(cxn);
-        free(cxn);
+        if ((fid_t)cxn->ep == cm_entry->fid)
+        {
+            printf("deleting client %d\n", cxn->client_id);
+            *cxn_ptr = cxn->next;
+            close_connection(cxn);
+            free(cxn);
+
+            return 0;
+        }
+        else
+        {
+            cxn_ptr = &cxn->next;
+            cxn = cxn->next;
+        }
     }
+
+    return -ENOENT;
 }
 
 void process_eq_events(struct net_info *ni)
@@ -247,10 +269,8 @@ void process_eq_events(struct net_info *ni)
         }
     } while (rc != 0);
 }
-
-void process_cq_events(struct net_info *ni)
+void process_cq_events(struct server_connection *cxn)
 {
-    struct server_connection *cxn = ni->server->connection_list;
     struct fi_cq_data_entry cqde;
     int rc;
 
@@ -274,7 +294,7 @@ void process_cq_events(struct net_info *ni)
 
         if (cqde.flags & FI_RECV)
         {
-            printf("Got message! len %d %.*s\n", cqde.len, cqde.len, cxn->read_buf);
+            printf("Got message! client #%d len %d %.*s\n", cxn->client_id, cqde.len, cqde.len, cxn->read_buf);
             fi_recv(cxn->ep, cxn->read_buf, 4096, NULL, 0, NULL);
         }
         else
@@ -285,6 +305,16 @@ void process_cq_events(struct net_info *ni)
             break;
         }
     } while (rc != 0);
+}
+
+void process_all_cq_events(struct net_info *ni)
+{
+    struct server_connection *cxn = ni->server->connection_list;
+    while (cxn)
+    {
+        process_cq_events(cxn);
+        cxn = cxn->next;
+    }
 }
 
 bool keep_running = 1;
@@ -314,6 +344,6 @@ int run_server(struct net_info *ni)
 
         printf("Got event\n");
         process_eq_events(ni);
-        process_cq_events(ni);
+        process_all_cq_events(ni);
     }
 }
