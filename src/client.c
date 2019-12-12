@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -49,13 +50,28 @@ int init_client(struct net_info *ni)
         FI_GOTO(err3, "fi_ep_bind");
     }
 
-    fi_cq_open(ni->client->domain, &cq_attr, &ni->client->cq, NULL);
-    fi_ep_bind(ni->client->ep, &ni->client->cq->fid, FI_RECV | FI_SEND);
+    rc = fi_cq_open(ni->client->domain, &cq_attr, &ni->client->cq, NULL);
+    if (rc < 0)
+    {
+        FI_GOTO(err3, "fi_cq_close");
+    }
+
+    rc = fi_ep_bind(ni->client->ep, &ni->client->cq->fid, FI_RECV | FI_SEND);
+    if (rc < 0)
+    {
+        FI_GOTO(err4, "fi_ep_bind");
+    }
 
     rc = fi_enable(ni->client->ep);
+    if (rc < 0)
+    {
+        FI_GOTO(err4, "fi_enable");
+    }
 
     return 0;
 
+err4:
+    fi_close((fid_t)ni->client->cq);
 err3:
     fi_close((fid_t)ni->client->ep);
 err2:
@@ -72,7 +88,7 @@ int run_client(struct net_info *ni, const char *addr, unsigned short port)
     struct fi_eq_cm_entry cm_entry;
     struct sockaddr_in sin;
     int rc;
-    char buf[] = "Hello World!";
+    char buf[] = "Hello world XX!";
     struct fi_cq_data_entry buf2;
 
     sin.sin_family = AF_INET;
@@ -81,16 +97,40 @@ int run_client(struct net_info *ni, const char *addr, unsigned short port)
 
     rc = fi_connect(ni->client->ep, &sin, NULL, 0);
     printf("fi_connect(%s:%d) = %d\n", addr, port, rc);
+    if (rc != 0)
+    {
+        fprintf(stderr, "Error connecting: %d\n", rc);
+        return rc;
+    }
 
     fi_eq_sread(ni->eq, &event, &cm_entry, sizeof(cm_entry), -1, 0);
-    fi_send(ni->client->ep, &buf, sizeof(buf), NULL, (fi_addr_t)NULL, NULL);
+    fi_eq_read(ni->eq, &event, &cm_entry, sizeof(cm_entry), 0);
+    if (0 && event == FI_NOTIFY)
+    {
+        struct fi_eq_err_entry err_entry;
+        fi_eq_readerr(ni->eq, &err_entry, 0);
+        fprintf(stderr, "got error: %d:%d\n", err_entry.err, err_entry.prov_errno);
+        return err_entry.err;
+    }
 
-    fi_cq_sread(ni->client->cq, &buf2, sizeof(buf2), 0, -1);
-    printf("got a cq? %s %.12s\n", fi_tostr(&buf2.flags, FI_TYPE_CQ_EVENT_FLAGS), buf2.buf);
+    fprintf(stderr, "unknown event: %d - %s\n", event, fi_tostr(&event, FI_TYPE_EQ_EVENT));
+    fprintf(stderr, "data %40x - %40s %d\n", cm_entry.data, cm_entry.data, cm_entry.fid);
+
+    for (int i = 0; i < 10; i++)
+    {
+        sprintf(buf, "Hello World %02d!", i);
+        fi_send(ni->client->ep, &buf, sizeof(buf), NULL, (fi_addr_t)NULL, NULL);
+        fi_cq_sread(ni->client->cq, &buf2, sizeof(buf2), 0, -1);
+        fi_cq_read(ni->client->cq, &buf2, sizeof(buf2));
+        printf("got a cq? %s %.*s\n", fi_tostr(&buf2.flags, FI_TYPE_CQ_EVENT_FLAGS), buf2.len, buf2.buf);
+        sleep(1);
+    }
 }
 
 void close_client(struct net_info *ni)
 {
-    free((fid_t)ni->client->domain);
+    fi_close((fid_t)ni->client->domain);
+    fi_close((fid_t)ni->client->cq);
+    fi_close((fid_t)ni->client->ep);
     free(ni->client);
 }

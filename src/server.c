@@ -159,6 +159,7 @@ int add_connection(struct net_info *ni, struct fi_eq_cm_entry *cm_entry)
         FI_GOTO(err1, "fi_cq_open");
     }
 
+    // if these flags are wrong, this will silently fail
     fi_ep_bind(cxn->ep, &cxn->cq->fid, FI_RECV);
     if (rc)
     {
@@ -166,7 +167,10 @@ int add_connection(struct net_info *ni, struct fi_eq_cm_entry *cm_entry)
     }
 
     fi_enable(cxn->ep);
-    //fi_recv(cxn->ep, &cxn->read_buf, len, NULL, 0, NULL);
+
+    // libfabric doesn't give us an event notification for the client send unless there's a buffer posted
+    printf("posted buffer!\n");
+    fi_recv(cxn->ep, cxn->read_buf, 4096, NULL, 0, NULL);
 
     fi_accept(cxn->ep, NULL, 0);
 
@@ -233,6 +237,7 @@ void process_eq_events(struct net_info *ni)
             printf("Connected\n");
             break;
         case FI_SHUTDOWN:
+            printf("Disconnected\n");
             del_connection(ni, &cm_entry);
             break;
         default:
@@ -255,7 +260,11 @@ void process_cq_events(struct net_info *ni)
 
     do
     {
+        struct fi_cq_err_entry err_entry;
+        rc = fi_cq_readerr(cxn->cq, &err_entry, 0);
+        printf("fi_cq_readerr rc=%d err_entry.err: %d\n", rc, err_entry.err);
         rc = fi_cq_read(cxn->cq, &cqde, 1);
+        printf("fi_cq_read=%d\n", rc);
         if (rc == -FI_EAGAIN)
         {
             return;
@@ -266,9 +275,13 @@ void process_cq_events(struct net_info *ni)
             return;
         }
 
-        switch (cqde.flags)
+        if (cqde.flags & FI_RECV)
         {
-        default:
+            printf("Got message! %*s\n", cqde.len, cqde.buf);
+            fi_recv(cxn->ep, cxn->read_buf, 4096, NULL, 0, NULL);
+        }
+        else
+        {
             fprintf(stderr, "unknown cq flags: %d - %s\n", cqde.flags, fi_tostr(&cqde.flags, FI_TYPE_CQ_EVENT_FLAGS));
             fprintf(stderr, "buf: %*s\n", cqde.len - 1, cqde.buf);
             fprintf(stderr, "data: %s\n", cqde.data);
