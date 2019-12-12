@@ -103,26 +103,48 @@ int run_client(struct net_info *ni, const char *addr, unsigned short port)
         return rc;
     }
 
-    fi_eq_sread(ni->eq, &event, &cm_entry, sizeof(cm_entry), -1, 0);
-    fi_eq_read(ni->eq, &event, &cm_entry, sizeof(cm_entry), 0);
-    if (0 && event == FI_NOTIFY)
+    // wait for connect event
+    do
     {
-        struct fi_eq_err_entry err_entry;
-        fi_eq_readerr(ni->eq, &err_entry, 0);
-        fprintf(stderr, "got error: %d:%d\n", err_entry.err, err_entry.prov_errno);
-        return err_entry.err;
-    }
+        rc = fi_wait(ni->wait_set, 1000);
+        if (rc < 0)
+        {
+            fprintf(stderr, "fi_wait rc=%d\n", rc);
+            return rc;
+        }
 
-    fprintf(stderr, "unknown event: %d - %s\n", event, fi_tostr(&event, FI_TYPE_EQ_EVENT));
-    fprintf(stderr, "data %40x - %40s %d\n", cm_entry.data, cm_entry.data, cm_entry.fid);
+        rc = fi_eq_read(ni->eq, &event, &cm_entry, sizeof(cm_entry), 0);
+        if (rc == -FI_EAGAIN)
+        {
+            fprintf(stderr, "timeout waiting for event\n");
+        }
+        else if (rc < 0)
+        {
+            fprintf(stderr, "fi_eq_read rc=%d\n", rc);
+            return rc;
+        }
+    } while (rc == -FI_EAGAIN);
+    fprintf(stderr, "got event: %d - %s\n", event, fi_tostr(&event, FI_TYPE_EQ_EVENT));
 
     for (int i = 0; i < 10; i++)
     {
         sprintf(buf, "Hello World %02d!", i);
-        fi_send(ni->client->ep, &buf, sizeof(buf), NULL, (fi_addr_t)NULL, NULL);
-        fi_cq_sread(ni->client->cq, &buf2, sizeof(buf2), 0, -1);
+
+        rc = fi_send(ni->client->ep, &buf, sizeof(buf), NULL, (fi_addr_t)NULL, NULL);
+        fprintf(stderr, "fi_send rc=%d\n", rc);
+
+        /* // XXX commented out because we don't wait for send events
+        do
+        {
+            rc = fi_wait(ni->wait_set, 1000);
+            fprintf(stderr, "fi_wait rc=%d\n", rc);
+        } while (rc != FI_SUCCESS);
         fi_cq_read(ni->client->cq, &buf2, sizeof(buf2));
+        fprintf(stderr, "fi_cq_read rc=%d\n", rc);
+
         printf("got a cq? %s %.*s\n", fi_tostr(&buf2.flags, FI_TYPE_CQ_EVENT_FLAGS), buf2.len, buf2.buf);
+        */
+
         sleep(1);
     }
 }

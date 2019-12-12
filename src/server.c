@@ -85,8 +85,8 @@ err:
 
 void close_connection(struct server_connection *cxn)
 {
-    fi_close((fid_t)cxn->cq);
     fi_close((fid_t)cxn->ep);
+    fi_close((fid_t)cxn->cq);
     fi_close((fid_t)cxn->domain);
     if (cxn->read_buf)
         free(cxn->read_buf);

@@ -50,8 +50,8 @@ struct fi_info *get_fi(bool is_source)
     hints->caps = FI_RMA;
     //hints->ep_attr->type = FI_EP_RDM;
     hints->ep_attr->type = FI_EP_MSG;
-    //hints->fabric_attr->prov_name = strdup("tcp");
-    hints->fabric_attr->prov_name = strdup("sockets");
+    hints->fabric_attr->prov_name = strdup("tcp");
+    //hints->fabric_attr->prov_name = strdup("sockets");
 
     rc = fi_getinfo(FI_VERSION(1, 4), "127.0.0.1", "1701", is_source ? FI_SOURCE : 0, hints, &fi);
 
@@ -105,6 +105,7 @@ int init_network(struct net_info *ni, bool is_server)
 
     eq_attr.wait_set = ni->wait_set;
 
+    printf("opening eq\n");
     rc = fi_eq_open(ni->fabric, &eq_attr, &ni->eq, NULL);
     if (rc < 0)
     {
