@@ -56,7 +56,7 @@ int init_client(struct net_info *ni)
         FI_GOTO(err3, "fi_cq_close");
     }
 
-    rc = fi_ep_bind(ni->client->ep, &ni->client->cq->fid, FI_RECV | FI_SEND);
+    rc = fi_ep_bind(ni->client->ep, &ni->client->cq->fid, FI_RECV | FI_TRANSMIT);
     if (rc < 0)
     {
         FI_GOTO(err4, "fi_ep_bind");
@@ -82,6 +82,38 @@ err:
     return rc;
 }
 
+void wait_for_cq(struct fid_cq *cq, struct fid_wait *wait_set, int mask)
+{
+    struct fi_cq_data_entry buf;
+    int rc;
+
+    // fi_wait doesn't tell you if there's already a CQ waiting, so need to check before wait
+    rc = fi_cq_read(cq, &buf, sizeof(buf));
+    fprintf(stderr, "fi_cq_read rc=%d\n", rc);
+    if (mask && !(buf.flags & mask))
+    {
+        rc = -1;
+    }
+
+    // wait for send cq
+    while (rc <= 0)
+    {
+        rc = fi_wait(wait_set, 1000);
+        fprintf(stderr, "fi_wait rc=%d\n", rc);
+
+        rc = fi_cq_read(cq, &buf, sizeof(buf));
+        fprintf(stderr, "fi_cq_read rc=%d\n", rc);
+
+        if (mask && !(buf.flags & mask))
+        {
+            rc = -1;
+        }
+    }
+
+    // printf("got a cq? %s %.*s\n", fi_tostr(&buf.flags, FI_TYPE_CQ_EVENT_FLAGS), buf.len, buf.buf);
+    return;
+}
+
 int run_client(struct net_info *ni, const char *addr, unsigned short port)
 {
     uint32_t event = 0;
@@ -89,7 +121,6 @@ int run_client(struct net_info *ni, const char *addr, unsigned short port)
     struct sockaddr_in sin;
     int rc;
     char buf[] = "Hello world XX!";
-    struct fi_cq_data_entry buf2;
 
     sin.sin_family = AF_INET;
     sin.sin_port = htons(port);
@@ -133,18 +164,7 @@ int run_client(struct net_info *ni, const char *addr, unsigned short port)
         rc = fi_send(ni->client->ep, &buf, sizeof(buf), NULL, (fi_addr_t)NULL, NULL);
         fprintf(stderr, "fi_send rc=%d\n", rc);
 
-        /* // XXX commented out because we don't wait for send events
-        do
-        {
-            rc = fi_wait(ni->wait_set, 1000);
-            fprintf(stderr, "fi_wait rc=%d\n", rc);
-        } while (rc != FI_SUCCESS);
-        fi_cq_read(ni->client->cq, &buf2, sizeof(buf2));
-        fprintf(stderr, "fi_cq_read rc=%d\n", rc);
-
-        printf("got a cq? %s %.*s\n", fi_tostr(&buf2.flags, FI_TYPE_CQ_EVENT_FLAGS), buf2.len, buf2.buf);
-        */
-
+        wait_for_cq(ni->client->cq, ni->wait_set, FI_SEND);
         sleep(1);
     }
 }
