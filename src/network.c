@@ -129,3 +129,143 @@ void close_network(struct net_info *ni)
     fi_close((fid_t)ni->fabric);
     free_fi(ni->fi);
 }
+
+int get_network_wait_fd(struct net_info *ni)
+{
+    int fd;
+
+    fi_control(ni->wait_set, FI_GETWAIT, (void *)&fd);
+
+    return fd;
+}
+
+int submit_request(struct net_request *req)
+{
+    if (req->cxn->credits == 0)
+    {
+        return -EAGAIN;
+    }
+
+    int rc;
+    switch (req->nr_type)
+    {
+    case NRT_GET:
+        rc = fi_recv(req->cxn->ep, req->buf, req->len, NULL, 0, req);
+        break;
+    case NRT_PUT:
+        rc = fi_send(req->cxn->ep, req->buf, req->len, NULL, 0, req);
+        break;
+    default:
+        fprintf(stderr, "unknown request type: %d\n", req->nr_type);
+        rc = -EINVAL;
+    }
+
+    req->cxn->credits--;
+
+    return rc;
+}
+
+void process_eq_events(struct net_info *ni)
+{
+    uint32_t event;
+    struct fi_eq_cm_entry cm_entry;
+    int rc;
+
+    do
+    {
+        rc = fi_eq_read(ni->eq, &event, &cm_entry, sizeof cm_entry, 0);
+        if (rc == -FI_EAGAIN)
+        {
+            return;
+        }
+        else if (rc < 0)
+        {
+            fprintf(stderr, "got error trying to read eq event: %d\n", rc);
+            return;
+        }
+
+        switch (event)
+        {
+        case FI_CONNREQ:
+            printf("Connecting...\n");
+            add_connection(ni, &cm_entry);
+            break;
+        case FI_CONNECTED:
+            printf("Connected\n");
+            break;
+        case FI_SHUTDOWN:
+            printf("Disconnected\n");
+            del_connection(ni, &cm_entry);
+            break;
+        default:
+            fprintf(stderr, "unknown event: %d - %s\n", event, fi_tostr(&event, FI_TYPE_EQ_EVENT));
+            break;
+        }
+    } while (rc != 0);
+}
+
+struct net_request *process_cq_events(struct peer_info *cxn)
+{
+    struct fi_cq_data_entry cqde;
+    int rc;
+
+    if (!cxn)
+    {
+        fprintf(stderr, "got null peer\n");
+        return NULL;
+    }
+
+    rc = fi_cq_read(cxn->cq, &cqde, 1);
+    if (rc == -FI_EAGAIN)
+    {
+        return NULL;
+    }
+    else if (rc < 0)
+    {
+        fprintf(stderr, "got error trying to read cq event: %d\n", rc);
+        return NULL;
+    }
+
+    if (cqde.flags & FI_RECV)
+    {
+        struct net_request *req = cqde.op_context;
+        if (req->nr_type != NRT_GET)
+        {
+            fprintf(stderr, "got unexpected recv on PUT, flags: %d - %s\n", cqde.flags, fi_tostr(&cqde.flags, FI_TYPE_CQ_EVENT_FLAGS));
+            return NULL;
+        }
+
+        return req;
+    }
+    else if (cqde.flags & FI_SEND)
+    {
+        struct net_request *req = cqde.op_context;
+        if (req->nr_type != NRT_PUT)
+        {
+            fprintf(stderr, "got unexpected send on GET, flags: %d - %s\n", cqde.flags, fi_tostr(&cqde.flags, FI_TYPE_CQ_EVENT_FLAGS));
+            return NULL;
+        }
+
+        return req;
+    }
+
+    fprintf(stderr, "unknown cq flags: %d - %s\n", cqde.flags, fi_tostr(&cqde.flags, FI_TYPE_CQ_EVENT_FLAGS));
+    fprintf(stderr, "buf: %*s\n", cqde.len - 1, cqde.buf);
+    fprintf(stderr, "data: %s\n", cqde.data);
+
+    return NULL;
+}
+
+void process_all_cq_events(struct net_info *ni)
+{
+    struct peer_info *cxn = ni->peer_list;
+    while (cxn)
+    {
+        process_cq_events(cxn);
+        cxn = cxn->next;
+    }
+}
+
+int poll_network(struct net_info *ni)
+{
+}

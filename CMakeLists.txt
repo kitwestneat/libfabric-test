@@ -12,8 +12,12 @@ add_executable(libfab-test
 	src/network.c
 	src/server.c
 	src/client.c
+	src/task.c
+	src/mem.c
 	include/network.h
 	include/log.h
+	include/task.h
+	include/mem.h
 )
 # add_subdirectory(src)
 target_link_libraries(libfab-test fabric)
