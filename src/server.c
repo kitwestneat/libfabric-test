@@ -1,20 +1,21 @@
 #include <assert.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <signal.h>
 
-#include <sys/socket.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include <rdma/fabric.h>
-#include <rdma/fi_rma.h>
+#include <rdma/fi_cm.h>
 #include <rdma/fi_domain.h>
 #include <rdma/fi_endpoint.h>
-#include <rdma/fi_cm.h>
+#include <rdma/fi_rma.h>
 
 #include "log.h"
+#include "mem.h"
 #include "network.h"
 
 static void print_ep_name(struct fid_pep *ep)
@@ -88,9 +89,8 @@ void close_connection(struct server_connection *cxn)
     // tcp provider doesn't like having the cq closed before the ep
     fi_close((fid_t)cxn->ep);
     fi_close((fid_t)cxn->cq);
-    fi_close((fid_t)cxn->domain);
-    if (cxn->read_buf)
-        free(cxn->read_buf);
+    if (cxn->bulk_buf)
+        free(cxn->bulk_buf);
 }
 
 void close_server(struct net_info *ni)
@@ -113,13 +113,10 @@ int get_client_id()
 {
     return next_client_id++;
 }
-
 int add_connection(struct net_info *ni, struct fi_eq_cm_entry *cm_entry)
 {
     struct fi_cq_attr cq_attr = {
-        .format = FI_CQ_FORMAT_DATA,
-        .wait_obj = FI_WAIT_SET,
-        .wait_set = ni->wait_set};
+        .format = FI_CQ_FORMAT_DATA, .wait_obj = FI_WAIT_SET, .wait_set = ni->wait_set};
     int len = 4096;
     struct server_connection *cxn = calloc(1, sizeof(struct server_connection));
     int rc = 0;
@@ -129,27 +126,29 @@ int add_connection(struct net_info *ni, struct fi_eq_cm_entry *cm_entry)
 
     printf("add_connection %d\n", cxn->client_id);
 
-    cxn->read_buf = malloc(4096);
-    if (!cxn->read_buf)
+    cxn->bulk_buf = alloc_bulk_buf();
+    cxn->cmd_buf = alloc_cmd_buf();
+
+    if (!cm_entry->info->domain_attr->domain && ni->domain)
     {
-        fprintf(stderr, "cannot allocate read_buf");
-    }
-    else
-    {
-        printf("read_buf %p\n", cxn->read_buf);
+        fprintf(stderr, "cm entry has no domain set, but ni has domain set\n");
     }
 
-    if (!cm_entry->info->domain_attr->domain)
+    if (cm_entry->info->domain_attr->domain != ni->domain)
     {
-        rc = fi_domain(ni->fabric, cm_entry->info, &cxn->domain, NULL);
+        fprintf(stderr, "cm entry domain does not equal ni domain\n");
+    }
+
+    if (!ni->domain && !cm_entry->info->domain_attr->domain)
+    {
+        rc = fi_domain(ni->fabric, cm_entry->info, &ni->domain, NULL);
         if (rc)
         {
             FI_GOTO(err, "fi_domain");
         }
-        domain_init = 1;
     }
 
-    rc = fi_endpoint(cxn->domain, cm_entry->info, &cxn->ep, NULL);
+    rc = fi_endpoint(ni->domain, cm_entry->info, &cxn->ep, NULL);
     if (rc)
     {
         FI_GOTO(err, "fi_endpoint");
@@ -162,7 +161,7 @@ int add_connection(struct net_info *ni, struct fi_eq_cm_entry *cm_entry)
     }
 
     // segfaults without cqs set up
-    rc = fi_cq_open(cxn->domain, &cq_attr, &cxn->cq, NULL);
+    rc = fi_cq_open(ni->domain, &cq_attr, &cxn->cq, NULL);
     if (rc)
     {
         FI_GOTO(err1, "fi_cq_open");
@@ -177,9 +176,14 @@ int add_connection(struct net_info *ni, struct fi_eq_cm_entry *cm_entry)
 
     fi_enable(cxn->ep);
 
-    // libfabric doesn't give us an event notification for the client send unless there's a buffer posted
+    // libfabric doesn't give us an event notification for the client send unless there's a buffer
+    // posted
     printf("posted buffer!\n");
-    fi_recv(cxn->ep, cxn->read_buf, 4096, NULL, 0, NULL);
+
+    // XXX this should probably be stored in the connection so we can free it on disconnect
+    struct server_request *rq = malloc(sizeof(struct server_request));
+    rq->cxn = cxn;
+    cmd_recv(rq);
 
     fi_accept(cxn->ep, NULL, 0);
 
@@ -195,12 +199,9 @@ err1:
     fi_close((fid_t)cxn->ep);
 
 err:
-    if (domain_init)
-    {
-        fi_close((fid_t)cxn->domain);
-    }
 
-    free(cxn->read_buf);
+    free_bulk_buf(cxn->bulk_buf);
+    free_cmd_buf(cxn->cmd_buf);
     free(cxn);
 
     return rc;
@@ -294,12 +295,14 @@ void process_cq_events(struct server_connection *cxn)
 
         if (cqde.flags & FI_RECV)
         {
-            printf("Got message! client #%d len %d %.*s\n", cxn->client_id, cqde.len, cqde.len, cxn->read_buf);
-            fi_recv(cxn->ep, cxn->read_buf, 4096, NULL, 0, NULL);
+            printf("Got message! client #%d len %d %.*s\n", cxn->client_id, cqde.len, cqde.len,
+                   cxn->bulk_buf);
+            fi_recv(cxn->ep, cxn->bulk_buf, 4096, NULL, 0, NULL);
         }
         else
         {
-            fprintf(stderr, "unknown cq flags: %d - %s\n", cqde.flags, fi_tostr(&cqde.flags, FI_TYPE_CQ_EVENT_FLAGS));
+            fprintf(stderr, "unknown cq flags: %d - %s\n", cqde.flags,
+                    fi_tostr(&cqde.flags, FI_TYPE_CQ_EVENT_FLAGS));
             fprintf(stderr, "buf: %*s\n", cqde.len - 1, cqde.buf);
             fprintf(stderr, "data: %s\n", cqde.data);
             break;

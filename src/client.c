@@ -4,15 +4,15 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <sys/socket.h>
-#include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 #include <rdma/fabric.h>
-#include <rdma/fi_rma.h>
+#include <rdma/fi_cm.h>
 #include <rdma/fi_domain.h>
 #include <rdma/fi_endpoint.h>
-#include <rdma/fi_cm.h>
+#include <rdma/fi_rma.h>
 
 #include "log.h"
 #include "network.h"
@@ -32,13 +32,13 @@ int init_client(struct net_info *ni)
         GOTO(err, "cannot allocate server_info");
     }
 
-    rc = fi_domain(ni->fabric, ni->fi, &ni->client->domain, NULL);
+    rc = fi_domain(ni->fabric, ni->fi, &ni->domain, NULL);
     if (rc < 0)
     {
         FI_GOTO(err1, "fi_domain");
     }
 
-    rc = fi_endpoint(ni->client->domain, ni->fi, &ni->client->ep, NULL);
+    rc = fi_endpoint(ni->domain, ni->fi, &ni->client->ep, NULL);
     if (rc < 0)
     {
         FI_GOTO(err2, "fi_endpoint");
@@ -50,7 +50,7 @@ int init_client(struct net_info *ni)
         FI_GOTO(err3, "fi_ep_bind");
     }
 
-    rc = fi_cq_open(ni->client->domain, &cq_attr, &ni->client->cq, NULL);
+    rc = fi_cq_open(ni->domain, &cq_attr, &ni->client->cq, NULL);
     if (rc < 0)
     {
         FI_GOTO(err3, "fi_cq_close");
@@ -75,7 +75,7 @@ err4:
 err3:
     fi_close((fid_t)ni->client->ep);
 err2:
-    fi_close((fid_t)ni->client->domain);
+    fi_close((fid_t)ni->domain);
 err1:
     free(ni->client);
 err:
@@ -110,7 +110,8 @@ void wait_for_cq(struct fid_cq *cq, struct fid_wait *wait_set, int mask)
         }
     }
 
-    // printf("got a cq? %s %.*s\n", fi_tostr(&buf.flags, FI_TYPE_CQ_EVENT_FLAGS), buf.len, buf.buf);
+    // printf("got a cq? %s %.*s\n", fi_tostr(&buf.flags, FI_TYPE_CQ_EVENT_FLAGS), buf.len,
+    // buf.buf);
     return;
 }
 
@@ -171,7 +172,7 @@ int run_client(struct net_info *ni, const char *addr, unsigned short port)
 
 void close_client(struct net_info *ni)
 {
-    fi_close((fid_t)ni->client->domain);
+    fi_close((fid_t)ni->domain);
     fi_close((fid_t)ni->client->cq);
     fi_close((fid_t)ni->client->ep);
     free(ni->client);
