@@ -1,6 +1,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+#include "mem.h"
 #include "network.h"
 
 int main(int argc, const char **argv)

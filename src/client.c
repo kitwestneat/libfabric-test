@@ -15,71 +15,12 @@
 #include <rdma/fi_rma.h>
 
 #include "log.h"
+#include "mem.h"
 #include "network.h"
 
 int init_client(struct net_info *ni)
 {
-    struct fi_cq_attr cq_attr = {
-        .format = FI_CQ_FORMAT_DATA,
-        .wait_obj = FI_WAIT_UNSPEC,
-    };
-    int rc;
-
-    ni->client = calloc(1, sizeof(*ni->client));
-    if (!ni->client)
-    {
-        rc = -1;
-        GOTO(err, "cannot allocate server_info");
-    }
-
-    rc = fi_domain(ni->fabric, ni->fi, &ni->domain, NULL);
-    if (rc < 0)
-    {
-        FI_GOTO(err1, "fi_domain");
-    }
-
-    rc = fi_endpoint(ni->domain, ni->fi, &ni->client->ep, NULL);
-    if (rc < 0)
-    {
-        FI_GOTO(err2, "fi_endpoint");
-    }
-
-    rc = fi_ep_bind(ni->client->ep, (fid_t)ni->eq, 0);
-    if (rc < 0)
-    {
-        FI_GOTO(err3, "fi_ep_bind");
-    }
-
-    rc = fi_cq_open(ni->domain, &cq_attr, &ni->client->cq, NULL);
-    if (rc < 0)
-    {
-        FI_GOTO(err3, "fi_cq_close");
-    }
-
-    rc = fi_ep_bind(ni->client->ep, &ni->client->cq->fid, FI_RECV | FI_TRANSMIT);
-    if (rc < 0)
-    {
-        FI_GOTO(err4, "fi_ep_bind");
-    }
-
-    rc = fi_enable(ni->client->ep);
-    if (rc < 0)
-    {
-        FI_GOTO(err4, "fi_enable");
-    }
-
-    return 0;
-
-err4:
-    fi_close((fid_t)ni->client->cq);
-err3:
-    fi_close((fid_t)ni->client->ep);
-err2:
-    fi_close((fid_t)ni->domain);
-err1:
-    free(ni->client);
-err:
-    return rc;
+    return setup_connection(ni, NULL, ni->fi);
 }
 
 void wait_for_cq(struct fid_cq *cq, struct fid_wait *wait_set, int mask)
@@ -115,19 +56,19 @@ void wait_for_cq(struct fid_cq *cq, struct fid_wait *wait_set, int mask)
     return;
 }
 
-int run_client(struct net_info *ni, const char *addr, unsigned short port)
+int connect_to_server(struct net_info *ni, const char *addr, unsigned short port)
 {
     uint32_t event = 0;
+
     struct fi_eq_cm_entry cm_entry;
     struct sockaddr_in sin;
     int rc;
-    char buf[] = "Hello world XX!";
 
     sin.sin_family = AF_INET;
     sin.sin_port = htons(port);
     inet_pton(AF_INET, addr, &(sin.sin_addr));
 
-    rc = fi_connect(ni->client->ep, &sin, NULL, 0);
+    rc = fi_connect(ni->connection_list->ep, &sin, NULL, 0);
     printf("fi_connect(%s:%d) = %d\n", addr, port, rc);
     if (rc != 0)
     {
@@ -141,8 +82,7 @@ int run_client(struct net_info *ni, const char *addr, unsigned short port)
         rc = fi_wait(ni->wait_set, 1000);
         if (rc < 0)
         {
-            fprintf(stderr, "fi_wait rc=%d\n", rc);
-            return rc;
+            FI_GOTO(done, "fi_wait");
         }
 
         rc = fi_eq_read(ni->eq, &event, &cm_entry, sizeof(cm_entry), 0);
@@ -158,22 +98,105 @@ int run_client(struct net_info *ni, const char *addr, unsigned short port)
     } while (rc == -FI_EAGAIN);
     fprintf(stderr, "got event: %d - %s\n", event, fi_tostr(&event, FI_TYPE_EQ_EVENT));
 
-    for (int i = 0; i < 10; i++)
+done:
+    return rc;
+}
+
+int addr = 0x4000;
+int get_next_addr()
+{
+    addr += BULK_SIZE;
+
+    return addr;
+}
+
+int len = 1234;
+int get_next_len()
+{
+    len = (len + 3) % BULK_SIZE;
+
+    return len;
+}
+
+void do_cmd(struct network_request *bulk_rq, struct network_request *cmd_rq,
+            enum net_cmd_type type);
+
+void do_put(struct network_request *bulk_rq)
+{
+    printf("do_put()\n");
+    do_cmd(bulk_rq, bulk_rq->rq_data, PUT);
+}
+
+void do_get(struct network_request *bulk_rq)
+{
+    printf("do_get()\n");
+    do_cmd(bulk_rq, bulk_rq->rq_data, GET);
+}
+
+int cmd_count = 0;
+void do_cmd(struct network_request *bulk_rq, struct network_request *cmd_rq, enum net_cmd_type type)
+{
+    cmd_rq->callback = NULL;
+    cmd_rq->cxn->cmd_buf->type = type;
+
+    // addr and len don't actually do anything here, just dummy data
+    cmd_rq->cxn->cmd_buf->addr = get_next_addr();
+    cmd_rq->cxn->cmd_buf->len = get_next_len();
+
+    if (type == PUT)
     {
-        sprintf(buf, "Hello World %02d!", i);
+        bulk_rq->callback = do_get;
+        bulk_recv(bulk_rq);
+    }
+    else
+    {
+        bulk_rq->callback = do_put;
+        bulk_send(bulk_rq);
+    }
 
-        rc = fi_send(ni->client->ep, &buf, sizeof(buf), NULL, (fi_addr_t)NULL, NULL);
-        fprintf(stderr, "fi_send rc=%d\n", rc);
+    cmd_send(cmd_rq);
+    cmd_count++;
+}
 
-        wait_for_cq(ni->client->cq, ni->wait_set, FI_SEND);
-        sleep(1);
+int initial_request(struct network_request *cmd_rq, struct network_request *bulk_rq)
+{
+    bulk_rq->rq_data = cmd_rq;
+    do_get(bulk_rq);
+}
+
+int run_client(struct net_info *ni, const char *addr, unsigned short port)
+{
+    struct network_request cmd_rq, bulk_rq;
+
+    connect_to_server(ni, addr, port);
+
+    cmd_rq.cxn = bulk_rq.cxn = ni->connection_list;
+
+    ni->connection_list->bulk_buf = alloc_bulk_buf();
+    ni->connection_list->cmd_buf = alloc_cmd_buf();
+
+    initial_request(&cmd_rq, &bulk_rq);
+
+    while (cmd_count < 10)
+    {
+        int rc = fi_wait(ni->wait_set, 1000);
+        if (rc == -FI_ETIMEDOUT)
+        {
+            continue;
+        }
+        else if (rc < 0)
+        {
+            fprintf(stderr, "Error waiting: %d\n", rc);
+            continue;
+        }
+
+        process_cq_events(ni->connection_list);
     }
 }
 
 void close_client(struct net_info *ni)
 {
-    fi_close((fid_t)ni->domain);
-    fi_close((fid_t)ni->client->cq);
-    fi_close((fid_t)ni->client->ep);
-    free(ni->client);
+    fi_close((fid_t)ni->connection_list->cq);
+    fi_close((fid_t)ni->connection_list->ep);
+    free(ni->connection_list);
 }
