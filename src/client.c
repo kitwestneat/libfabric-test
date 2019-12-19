@@ -23,39 +23,6 @@ int init_client(struct net_info *ni)
     return setup_connection(ni, NULL, ni->fi);
 }
 
-void wait_for_cq(struct fid_cq *cq, struct fid_wait *wait_set, int mask)
-{
-    struct fi_cq_data_entry buf;
-    int rc;
-
-    // fi_wait doesn't tell you if there's already a CQ waiting, so need to check before wait
-    rc = fi_cq_read(cq, &buf, sizeof(buf));
-    fprintf(stderr, "fi_cq_read rc=%d\n", rc);
-    if (mask && !(buf.flags & mask))
-    {
-        rc = -1;
-    }
-
-    // wait for send cq
-    while (rc <= 0)
-    {
-        rc = fi_wait(wait_set, 1000);
-        fprintf(stderr, "fi_wait rc=%d\n", rc);
-
-        rc = fi_cq_read(cq, &buf, sizeof(buf));
-        fprintf(stderr, "fi_cq_read rc=%d\n", rc);
-
-        if (mask && !(buf.flags & mask))
-        {
-            rc = -1;
-        }
-    }
-
-    // printf("got a cq? %s %.*s\n", fi_tostr(&buf.flags, FI_TYPE_CQ_EVENT_FLAGS), buf.len,
-    // buf.buf);
-    return;
-}
-
 int connect_to_server(struct net_info *ni, const char *addr, unsigned short port)
 {
     uint32_t event = 0;
@@ -118,70 +85,90 @@ int get_next_len()
     return len;
 }
 
-void do_cmd(struct network_request *bulk_rq, struct network_request *cmd_rq,
-            enum net_cmd_type type);
+int cmd_count = 0;
+void do_cmd(struct network_request *cmd_rq, enum net_cmd_type type);
 
-void do_put(struct network_request *bulk_rq)
+void do_put(struct network_request *cmd_rq)
 {
     printf("do_put()\n");
-    do_cmd(bulk_rq, bulk_rq->rq_data, PUT);
+    do_cmd(cmd_rq, PUT);
 }
 
-void do_get(struct network_request *bulk_rq)
+void do_get(struct network_request *cmd_rq)
 {
     printf("do_get()\n");
-    do_cmd(bulk_rq, bulk_rq->rq_data, GET);
+    sprintf(cmd_rq->cxn->bulk_buf, "This is client speaking, cmd_count = %d\n", cmd_count);
+    do_cmd(cmd_rq, GET);
 }
 
-int cmd_count = 0;
-void do_cmd(struct network_request *bulk_rq, struct network_request *cmd_rq, enum net_cmd_type type)
+void print_put(struct network_request *rq)
 {
-    cmd_rq->callback = NULL;
-    cmd_rq->cxn->cmd_buf->type = type;
+    printf("received PUT from server: %s\n", rq->cxn->bulk_buf);
 
-    // addr and len don't actually do anything here, just dummy data
-    cmd_rq->cxn->cmd_buf->addr = get_next_addr();
-    cmd_rq->cxn->cmd_buf->len = get_next_len();
+    do_get(rq);
+}
 
-    if (type == PUT)
+void wait_for_complete(struct network_request *rq)
+{
+    if (rq->cxn->cmd_buf->type == PUT)
     {
-        bulk_rq->callback = do_get;
-        bulk_recv(bulk_rq);
+        rq->callback = print_put;
     }
     else
     {
-        bulk_rq->callback = do_put;
-        bulk_send(bulk_rq);
+        rq->callback = do_put;
     }
+
+    cmd_recv(rq);
+}
+
+void do_cmd(struct network_request *cmd_rq, enum net_cmd_type type)
+{
+    cmd_rq->callback = wait_for_complete;
+
+    struct network_cmd *cmd = cmd_rq->cxn->cmd_buf;
+    cmd->type = type;
+
+    // op_addr doesn't actually do anything here, just dummy data
+    cmd->op_addr = get_next_addr();
 
     cmd_send(cmd_rq);
     cmd_count++;
 }
 
-int initial_request(struct network_request *cmd_rq, struct network_request *bulk_rq)
+int initial_request(struct network_request *cmd_rq)
 {
-    bulk_rq->rq_data = cmd_rq;
-    do_get(bulk_rq);
+    do_get(cmd_rq);
 }
 
 int run_client(struct net_info *ni, const char *addr, unsigned short port)
 {
-    struct network_request cmd_rq, bulk_rq;
+    struct network_request cmd_rq;
 
     connect_to_server(ni, addr, port);
 
-    cmd_rq.cxn = bulk_rq.cxn = ni->connection_list;
+    cmd_rq.cxn = ni->connection_list;
 
     ni->connection_list->bulk_buf = alloc_bulk_buf();
     ni->connection_list->cmd_buf = alloc_cmd_buf();
 
-    initial_request(&cmd_rq, &bulk_rq);
+    struct network_cmd *cmd = cmd_rq.cxn->cmd_buf;
+
+    // set up rma
+    cmd->rma_iov.addr = get_bulk_offset(cmd_rq.cxn->bulk_buf);
+    cmd->rma_iov.len = BULK_SIZE;
+    cmd->rma_iov.key = fi_mr_key(get_bulk_mr());
+
+    cmd->rma.rma_iov_count = 1;
+
+    initial_request(&cmd_rq);
 
     while (cmd_count < 10)
     {
         int rc = fi_wait(ni->wait_set, 1000);
         if (rc == -FI_ETIMEDOUT)
         {
+            printf("wait timeout\n");
             continue;
         }
         else if (rc < 0)
@@ -190,6 +177,7 @@ int run_client(struct net_info *ni, const char *addr, unsigned short port)
             continue;
         }
 
+        printf("got event\n");
         process_cq_events(ni->connection_list);
     }
 }
@@ -198,5 +186,9 @@ void close_client(struct net_info *ni)
 {
     fi_close((fid_t)ni->connection_list->cq);
     fi_close((fid_t)ni->connection_list->ep);
+
+    free_cmd_buf(ni->connection_list->cmd_buf);
+
+    free_bulk_buf(ni->connection_list->bulk_buf);
     free(ni->connection_list);
 }

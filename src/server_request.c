@@ -1,4 +1,6 @@
 #include <assert.h>
+#include <rdma/fi_rma.h>
+
 #include <rdma/fi_endpoint.h>
 #include <stdio.h>
 
@@ -18,14 +20,45 @@ void cmd_send(struct network_request *rq)
             rq);
 }
 
-void bulk_recv(struct network_request *rq)
+/*
+"By default, the remote endpoint does not generate an event or notify the user when a memory
+region has been accessed by an RMA read or write operation.  However, immediate data may be
+associated with an RMA write operation.  RMA writes with immediate data will generate a
+completion entry at the remote endpoint, so that the immediate data may be delivered."
+
+I haven't been able to get this to work with the sockets provider.
+*/
+void bulk_op(struct network_request *rq, struct fi_msg_rma *msg, bool is_read)
 {
-    fi_recv(rq->cxn->ep, rq->cxn->bulk_buf, BULK_SIZE, fi_mr_desc(get_bulk_mr()), 0, rq);
+    struct iovec iov = {
+        .iov_base = rq->cxn->bulk_buf,
+        .iov_len = BULK_SIZE,
+    };
+    void *desc = fi_mr_desc(get_bulk_mr());
+
+    msg->msg_iov = &iov;
+    msg->desc = &desc;
+    msg->iov_count = 1;
+    msg->context = rq;
+
+    if (is_read)
+    {
+        fi_readmsg(rq->cxn->ep, msg, 0);
+    }
+    else
+    {
+        fi_writemsg(rq->cxn->ep, msg, 0);
+    }
 }
 
-void bulk_send(struct network_request *rq)
+void bulk_read(struct network_request *rq, struct fi_msg_rma *msg)
 {
-    fi_send(rq->cxn->ep, rq->cxn->bulk_buf, BULK_SIZE, fi_mr_desc(get_bulk_mr()), 0, rq);
+    bulk_op(rq, msg, 1);
+}
+
+void bulk_write(struct network_request *rq, struct fi_msg_rma *msg)
+{
+    bulk_op(rq, msg, 0);
 }
 
 void process_cq_events(struct connection *cxn)
@@ -45,18 +78,17 @@ void process_cq_events(struct connection *cxn)
         rc = fi_cq_read(cxn->cq, &cqde, 1);
         if (rc == -FI_EAGAIN)
         {
+            printf("got -EAGAIN\n");
             return;
         }
         else if (rc == -FI_EAVAIL)
         {
             struct fi_cq_err_entry cqee;
             rc = fi_cq_readerr(cxn->cq, &cqee, 0);
-            /* // for some reason this returns -1
-            if (rc )
+            if (rc < 0)
             {
-                FI_GOTO(done, "fi_cq_readerr");
+                fprintf(stderr, "warning - fi_cq_readerr: rc=%d\n", rc);
             }
-            */
 
             struct network_request *rq = cqee.op_context;
             rq->rq_res = cqee.err;
@@ -70,12 +102,14 @@ void process_cq_events(struct connection *cxn)
             FI_GOTO(done, "fi_cq_read");
         }
 
-        if (cqde.flags & FI_RECV || cqde.flags & FI_SEND)
+        if (cqde.flags & (FI_RECV | FI_SEND | FI_READ | FI_WRITE))
         {
             struct network_request *rq = cqde.op_context;
 
-            printf("Got message! client #%d len %d rq %p, rq->cb %p\n", cxn->client_id, cqde.len,
-                   rq, rq->callback);
+            printf("message - client #%d len %d rq %p, rq->cb %p\n", cxn->client_id, cqde.len, rq,
+                   rq->callback);
+            fprintf(stderr, "cq flags: %d - %s\n", cqde.flags,
+                    fi_tostr(&cqde.flags, FI_TYPE_CQ_EVENT_FLAGS));
 
             if (rq->callback != NULL)
             {

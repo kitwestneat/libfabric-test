@@ -1,6 +1,7 @@
 #include "mem.h"
 #include "log.h"
 #include "network.h"
+#include <assert.h>
 #include <rdma/fi_domain.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +42,8 @@ int init_memory(struct net_info *ni)
     {
         FI_GOTO(err, "fi_mr_reg");
     }
+
+    printf("registered bulk memory %p, key %llu\n", bulk_bufs, fi_mr_key(bulk_mr));
 
     rc = fi_mr_reg(ni->domain, cmd_bufs, cmd_buf_size,
                    FI_SEND | FI_RECV | FI_READ | FI_WRITE | FI_REMOTE_READ | FI_REMOTE_WRITE, 0, 1,
@@ -157,4 +160,13 @@ struct fid_mr *get_bulk_mr()
 struct fid_mr *get_cmd_mr()
 {
     return cmd_mr;
+}
+
+// with scalable memory registration, you need to use the offset from the start of the memory
+// region, not the raw virtual address
+uint64_t get_bulk_offset(void *bulk_vaddr)
+{
+    assert(bulk_vaddr >= bulk_bufs);
+
+    return bulk_vaddr - bulk_bufs;
 }

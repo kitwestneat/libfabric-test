@@ -1,6 +1,8 @@
 #ifndef NETWORK_H
 #define NETWORK_H
 
+#include <rdma/fi_rma.h>
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -60,8 +62,10 @@ enum net_cmd_type
 struct network_cmd
 {
     enum net_cmd_type type;
-    size_t len;
-    uint64_t addr;
+    uint64_t op_addr;
+
+    struct fi_msg_rma rma;
+    struct fi_rma_iov rma_iov;
 };
 
 int init_network(struct net_info *ni, bool is_server);
@@ -80,8 +84,8 @@ int setup_connection(struct net_info *ni, struct connection **cxn_ptr, struct fi
 void cmd_recv(struct network_request *rq);
 void cmd_send(struct network_request *rq);
 
-void bulk_recv(struct network_request *rq);
-void bulk_send(struct network_request *rq);
+void bulk_read(struct network_request *rq, struct fi_msg_rma *msg);
+void bulk_write(struct network_request *rq, struct fi_msg_rma *msg);
 
 void process_all_cq_events(struct net_info *ni);
 void process_cq_events(struct connection *cxn);

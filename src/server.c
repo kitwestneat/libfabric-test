@@ -237,37 +237,44 @@ int run_server(struct net_info *ni)
     }
 }
 
+void send_complete(struct network_request *rq)
+{
+    rq->callback = process_cmd;
+    cmd_recv(rq);
+}
+
 void finish_get_cmd(struct network_request *rq)
 {
     printf("finish_get_cmd: received %s\n", rq->cxn->bulk_buf);
 
-    rq->callback = process_cmd;
-    cmd_recv(rq);
+    rq->callback = send_complete;
+    cmd_send(rq);
 }
 
 void finish_put_cmd(struct network_request *rq)
 {
     printf("finish_put_cmd: sent data\n");
 
-    rq->callback = process_cmd;
-    cmd_recv(rq);
+    rq->callback = send_complete;
+    cmd_send(rq);
 }
 
 void process_cmd(struct network_request *rq)
 {
     struct network_cmd *cmd = rq->cxn->cmd_buf;
+    cmd->rma.rma_iov = &cmd->rma_iov;
+    cmd->rma.rma_iov_count = 1;
 
     printf("process_cmd, type %d\n", cmd->type);
     if (cmd->type == GET)
     {
-        assert(cmd->len < BULK_SIZE);
         rq->callback = finish_get_cmd;
-        bulk_recv(rq);
+        bulk_read(rq, &cmd->rma);
     }
     else
     {
-        sprintf(rq->cxn->bulk_buf, "Hello world! addr: %x len: %d\n", cmd->addr, cmd->len);
+        sprintf(rq->cxn->bulk_buf, "Hello world from the server, addr: %x\n", cmd->op_addr);
         rq->callback = finish_put_cmd;
-        bulk_send(rq);
+        bulk_write(rq, &cmd->rma);
     }
 }

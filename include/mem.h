@@ -19,4 +19,6 @@ int close_memory(struct net_info *ni);
 
 struct fid_mr *get_bulk_mr();
 struct fid_mr *get_cmd_mr();
+
+uint64_t get_bulk_offset(void *bulk_vaddr);
 #endif
