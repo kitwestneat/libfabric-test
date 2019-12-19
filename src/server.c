@@ -180,6 +180,21 @@ void process_eq_events(struct net_info *ni)
         {
             return;
         }
+        else if (rc == -FI_EAVAIL)
+        {
+            struct fi_eq_err_entry eqee;
+
+            rc = fi_eq_readerr(ni->eq, &eqee, 0);
+
+            if (rc < 0)
+            {
+                fprintf(stderr, "warning - fi_cq_readerr: rc=%d\n", rc);
+            }
+
+            fprintf(stderr, "CM error detected: %s [%d]\n",
+                    fi_eq_strerror(ni->eq, eqee.prov_errno, eqee.err_data, NULL, 0), eqee.err);
+            return;
+        }
         else if (rc < 0)
         {
             fprintf(stderr, "got error trying to read eq event: %d\n", rc);

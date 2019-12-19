@@ -78,7 +78,6 @@ void process_cq_events(struct connection *cxn)
         rc = fi_cq_read(cxn->cq, &cqde, 1);
         if (rc == -FI_EAGAIN)
         {
-            printf("got -EAGAIN\n");
             return;
         }
         else if (rc == -FI_EAVAIL)
@@ -106,14 +105,13 @@ void process_cq_events(struct connection *cxn)
         {
             struct network_request *rq = cqde.op_context;
 
-            printf("message - client #%d len %d rq %p, rq->cb %p\n", cxn->client_id, cqde.len, rq,
-                   rq->callback);
+            printf("message - client #%d len %d rq %p\n", cxn->client_id, cqde.len, rq);
             fprintf(stderr, "cq flags: %d - %s\n", cqde.flags,
                     fi_tostr(&cqde.flags, FI_TYPE_CQ_EVENT_FLAGS));
 
-            if (rq->callback != NULL)
+            if (rq && rq->callback != NULL)
             {
-                printf("running callback\n");
+                printf("running callback, cb=%p\n", rq->callback);
                 rq->callback(rq);
             }
             else
