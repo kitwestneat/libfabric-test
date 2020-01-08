@@ -1,18 +1,8 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+#include "mem.h"
 #include "network.h"
-#include "rdmt.h"
-
-int run_app(struct rdmt_app_info *app)
-{
-    struct rdmt_peer_rq *rq;
-
-    while (rq = net_wait_for_rq(app->net))
-    {
-        rq->next_func(app, rq);
-    }
-}
 
 int main(int argc, const char **argv)
 {
@@ -23,7 +13,7 @@ int main(int argc, const char **argv)
     rc = init_network(&net, is_server);
     if (rc < 0)
     {
-        fprintf(stderr, "Unable to initialize fabric: rc=%d\n", rc);
+        fprintf(stderr, "Unable to initialize fabric");
 
         return rc;
     }
@@ -33,7 +23,7 @@ int main(int argc, const char **argv)
         rc = init_server(&net);
         if (rc < 0)
         {
-            fprintf(stderr, "Unable to initialize server: rc=%d\n", rc);
+            fprintf(stderr, "Unable to initialize server");
 
             return rc;
         }
@@ -44,10 +34,10 @@ int main(int argc, const char **argv)
     }
     else
     {
-        rc = init_client(&net);
+        init_client(&net);
         if (rc < 0)
         {
-            fprintf(stderr, "Unable to initialize client: rc=%d\n", rc);
+            fprintf(stderr, "Unable to initialize client");
 
             return rc;
         }
